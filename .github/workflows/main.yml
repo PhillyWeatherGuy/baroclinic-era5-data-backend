@@ -20,8 +20,8 @@ concurrency:
 
 jobs:
   # Decides how to split the work across runners.
-  #  - Inputs left blank -> all 25 parameters in 15 balanced groups.
-  #  - Inputs given      -> one runner per listed parameter.
+  #  - Inputs left blank -> all 27 parameters in 15 balanced groups.
+  #  - Inputs given      -> chunks the requested parameters into at most 15 groups.
   plan:
     runs-on: ubuntu-latest
     outputs:
@@ -33,16 +33,18 @@ jobs:
         TARGET_PARAMS: ${{ inputs.parameters }}
       run: |
         python3 - <<'EOF'
-        import json, os
+        import json, os, math
 
         target = os.environ.get("TARGET_PARAMS", "").split()
 
+        # 27 parameters perfectly packed into 15 groups
         default_groups = [
             "prate",
             "pva",
             "w250 w300",
             "w500 w700",
             "w850 w925",
+            "w10 gust10",         # <-- Added the new wind parameters
             "t1000 t925",
             "t850 t700",
             "t600 t500",
@@ -51,11 +53,17 @@ jobs:
             "cape pwat",
             "asnow asnow_6h",
             "asnow_24h tp",
-            "tp_6h",
-            "tp_24h",
+            "tp_6h tp_24h"
         ]
 
-        groups = target if target else default_groups
+        if not target:
+            groups = default_groups
+        else:
+            # If custom params are provided, chunk them into max 15 groups
+            num_groups = min(len(target), 15)
+            chunk_size = math.ceil(len(target) / num_groups)
+            groups = [" ".join(target[i:i + chunk_size]) for i in range(0, len(target), chunk_size)]
+
         matrix = {"include": [{"name": g, "params": g} for g in groups]}
 
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
