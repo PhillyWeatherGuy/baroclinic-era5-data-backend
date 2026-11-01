@@ -39,21 +39,8 @@ jobs:
 
         # 27 parameters perfectly packed into 15 groups
         default_groups = [
-            "prate",
-            "pva",
-            "w250 w300",
-            "w500 w700",
-            "w850 w925",
-            "w10 gust10",         # <-- Added the new wind parameters
-            "t1000 t925",
-            "t850 t700",
-            "t600 t500",
-            "t400 z500_anom",
-            "2t",
-            "cape pwat",
-            "asnow asnow_6h",
-            "asnow_24h tp",
-            "tp_6h tp_24h"
+            "w10",
+            "gust10"
         ]
 
         if not target:
