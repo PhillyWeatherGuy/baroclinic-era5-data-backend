@@ -13,6 +13,7 @@ import contextlib
 import functools
 import concurrent.futures
 import numpy as np
+import pandas as pd
 import xarray as xr
 import cv2
 import contourpy
@@ -41,6 +42,7 @@ MAX_CONCURRENT_PARAMS  = 1
 GZIP_LEVEL = 6
 GZIP_THREADS = 4
 FRAMES_PER_VOLUME = 10                       # 10 time frames per binary chunk
+BLOCK_HOURS = 24                             # Frames loaded into RAM at once by BlockedVar
 
 CONTOUR_COORD_SCALE = 1000                  # Stored as integer thousandths of a degree
 CONTOUR_FORMAT = "CTV2"
@@ -390,6 +392,40 @@ def get_variable_slice(ds, var_name, start_dt, end_dt, level=None):
     return da.astype(np.float32).load()
 
 
+class BlockedVar:
+    """
+    Memory-friendly stand-in for a fully loaded variable slice.
+
+    Loads only `block` hourly frames into RAM at a time (the zarr store is chunked
+    one time step per chunk, so this costs no extra efficiency) and exposes the same
+    `.sel(time=..., method="nearest")` access the processing loop already uses.
+    Works best when frames are requested in chronological order, which they are.
+    """
+    def __init__(self, ds, var, start, end, level=None, block=BLOCK_HOURS):
+        self.ds, self.var, self.level = ds, var, level
+        self.end = pd.Timestamp(end)
+        self.block = block
+        self._da = None
+        self._lo = self._hi = None
+
+    def _load(self, t):
+        hi = min(t + pd.Timedelta(hours=self.block - 1), self.end)
+        self._da = None  # release the previous block before pulling the next one
+        gc.collect()
+        self._da = get_variable_slice(self.ds, self.var, t, hi, level=self.level)
+        self._lo, self._hi = t, hi
+
+    def sel(self, time, method=None):
+        t = pd.Timestamp(time)
+        if self._da is None or not (self._lo <= t <= self._hi):
+            self._load(t)
+        return self._da.sel(time=t, method="nearest")
+
+    @property
+    def latitude(self):
+        return self._da.latitude
+
+
 # ---------------------------------------------------------------------------
 # Master Pipeline for ERA5 Storm
 # ---------------------------------------------------------------------------
@@ -433,7 +469,7 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
         da_main = np.hypot(da_u, da_v)
     else:
         var_name = grib_p if isinstance(grib_p, str) else grib_p[0]
-        da_main = get_variable_slice(ds, var_name, start_dt, end_dt, level=lev)
+        da_main = BlockedVar(ds, var_name, start_dt, end_dt, level=lev)
 
     phases["cloud_fetch_main"] = time.perf_counter() - t0
 
@@ -447,17 +483,17 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
         for c_src in contour_sources:
             c_id = c_src.get("id", c_src.get("grib_param", "contour"))
             if c_src.get("type") == "thickness":
-                da_contours[f"{c_id}_500"] = get_variable_slice(ds, "z", start_dt, end_dt, level=500)
-                da_contours[f"{c_id}_1000"] = get_variable_slice(ds, "z", start_dt, end_dt, level=1000)
+                da_contours[f"{c_id}_500"] = BlockedVar(ds, "z", start_dt, end_dt, level=500)
+                da_contours[f"{c_id}_1000"] = BlockedVar(ds, "z", start_dt, end_dt, level=1000)
             else:
                 c_lev = c_src.get("levelist")
-                da_contours[c_id] = get_variable_slice(ds, c_src["grib_param"], start_dt, end_dt, level=c_lev)
+                da_contours[c_id] = BlockedVar(ds, c_src["grib_param"], start_dt, end_dt, level=c_lev)
 
     # 3. Fetch P-Type Dependencies (if precipitation rate)
     da_ptype_deps = {}
     if param_config.get("ptype_source"):
-        da_ptype_deps["sf"] = get_variable_slice(ds, "sf", start_dt, end_dt)
-        da_ptype_deps["2t"] = get_variable_slice(ds, "2t", start_dt, end_dt)
+        da_ptype_deps["sf"] = BlockedVar(ds, "sf", start_dt, end_dt)
+        da_ptype_deps["2t"] = BlockedVar(ds, "2t", start_dt, end_dt)
 
     # 4. Process all timesteps
     t0 = time.perf_counter()
@@ -546,7 +582,7 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
 
     phases["process_frames"] = time.perf_counter() - t0
 
-    # 🌟 AGGRESSIVE GARBAGE COLLECTION (Free up 3.7 GB of RAM before contouring/gzipping)
+    # 🌟 AGGRESSIVE GARBAGE COLLECTION (free source arrays before contouring/gzipping)
     del da_main
     da_contours.clear()
     da_ptype_deps.clear()
