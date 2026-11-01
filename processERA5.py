@@ -24,11 +24,11 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_superstorm_1993v4"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
-STORM_NAME = "1993 Superstorm"              # Display title in the UI manifest
-START_DATE = "1993-03-10 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
-END_DATE   = "1993-03-16 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
-STEP_HOURS = 1                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
+STORM_ID   = "era5_hurricane_sandyv4"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_NAME = "Hurricane Sandy"              # Display title in the UI manifest
+START_DATE = "2012-10-22 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
+END_DATE   = "2012-11-02 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
+STEP_HOURS = 2                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
 CONFIG_FILE_PATH = os.path.join("config", "parametersERA5.json")
