@@ -15,7 +15,6 @@ import concurrent.futures
 import numpy as np
 import xarray as xr
 import cv2
-import boto3
 import contourpy
 import gzip
 import struct
@@ -31,6 +30,9 @@ STEP_HOURS = 1                              # 1 for hourly, 3 for 3-hourly, 6 fo
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
 CONFIG_FILE_PATH = os.path.join("config", "parametersERA5.json")
+
+# Public Cloud Open Data Bucket (Free, Anonymous, Zero Keys Needed)
+ARCO_ERA5_ZARR = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 
 # Performance & Concurrency
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
@@ -335,162 +337,54 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
 
 
 # ---------------------------------------------------------------------------
-# ERA5 Downloader: Batches the full storm window in 1 single CDS API request
+# Public Cloud ARCO-ERA5 Data Slicer (Zero accounts, Zero keys)
 # ---------------------------------------------------------------------------
-def download_era5_storm_dataset(param_config, date_list, output_file):
-    """
-    Downloads all storm hours in a single efficient CDS API request.
-    If the file already exists locally, download is skipped.
-    """
-    if os.path.exists(output_file):
-        return output_file
+_GLOBAL_DS = None
+_DS_LOCK = threading.Lock()
 
-    import cdsapi
-    c = cdsapi.Client()
+def get_public_era5_dataset():
+    """Lazily opens the Google Cloud ARCO-ERA5 Zarr store anonymously."""
+    global _GLOBAL_DS
+    with _DS_LOCK:
+        if _GLOBAL_DS is None:
+            print("☁️ Connecting anonymously to Public Cloud ERA5 Zarr store...")
+            _GLOBAL_DS = xr.open_zarr(
+                ARCO_ERA5_ZARR,
+                chunks=None,
+                storage_options=dict(token="anon")
+            )
+            print("✅ Connected to Public Cloud ERA5 successfully.")
+        return _GLOBAL_DS
 
-    is_pl = (param_config.get("levtype") == "pl")
-    dataset = "reanalysis-era5-pressure-levels" if is_pl else "reanalysis-era5-single-levels"
 
-    years = sorted(list({dt.strftime("%Y") for dt in date_list}))
-    months = sorted(list({dt.strftime("%m") for dt in date_list}))
-    days = sorted(list({dt.strftime("%d") for dt in date_list}))
-    times = sorted(list({dt.strftime("%H:00") for dt in date_list}))
-
-    var_name = param_config.get("era5_name") or param_config["grib_param"]
-    var_list = var_name if isinstance(var_name, list) else [var_name]
-
-    request_params = {
-        "product_type": "reanalysis",
-        "format": "grib",
-        "variable": var_list,
-        "year": years,
-        "month": months,
-        "day": days,
-        "time": times,
+def get_variable_slice(ds, var_name, start_dt, end_dt, level=None):
+    """Pulls and subsets a 3D/4D variable slice directly from the cloud."""
+    var_map = {
+        "2t": "2m_temperature",
+        "tp": "total_precipitation",
+        "sf": "snowfall",
+        "msl": "mean_sea_level_pressure",
+        "tcwv": "total_column_water_vapour",
+        "cape": "convective_available_potential_energy",
+        "t": "temperature",
+        "z": "geopotential",
+        "u": "u_component_of_wind",
+        "v": "v_component_of_wind",
+        "vo": "vorticity"
     }
+    cloud_var = var_map.get(var_name, var_name)
 
-    if is_pl and "levelist" in param_config:
-        lev = param_config["levelist"]
-        request_params["pressure_level"] = [str(lev)] if isinstance(lev, (int, str)) else [str(l) for l in lev]
+    da = ds[cloud_var].sel(time=slice(start_dt, end_dt))
+    if level is not None and "level" in da.coords:
+        da = da.sel(level=int(level))
 
-    print(f"  📥 [CDS API] Requesting {param_config['id']} for {len(date_list)} timesteps...")
-    c.retrieve(dataset, request_params, output_file)
-    return output_file
+    if 'lon' in da.coords: da = da.rename({'lon': 'longitude'})
+    if 'lat' in da.coords: da = da.rename({'lat': 'latitude'})
+    da = da.sortby('latitude', ascending=False)
+    if da.longitude.max() > 180:
+        da = da.assign_coords(longitude=(((da.longitude + 180) % 360) - 180)).sortby('longitude')
 
-
-@timed("decode_all")
-def process_era5_step_from_ds(ds, dt_step, param_config, target_date_str, want_raster=True, want_raw=False):
-    """Extracts, rotates, and normalizes a single hourly slice from the xarray dataset."""
-    try:
-        # Time selection
-        if 'time' in ds.coords:
-            ds_step = ds.sel(time=dt_step, method="nearest")
-        else:
-            ds_step = ds
-
-        if 'lon' in ds_step.coords:
-            ds_step = ds_step.rename({'lon': 'longitude'})
-        if 'lat' in ds_step.coords:
-            ds_step = ds_step.rename({'lat': 'latitude'})
-
-        ds_step = ds_step.sortby('latitude', ascending=False)
-        if ds_step.longitude.max() > 180:
-            ds_step = ds_step.assign_coords(
-                longitude=(((ds_step.longitude + 180) % 360) - 180)
-            ).sortby('longitude')
-
-        grib_var = param_config["grib_param"]
-        if "u" in ds_step and "v" in ds_step:
-            raw_arr_k = np.hypot(np.squeeze(ds_step["u"].values), np.squeeze(ds_step["v"].values))
-        else:
-            target_var = grib_var if (isinstance(grib_var, str) and grib_var in ds_step) else list(ds_step.data_vars)[0]
-            raw_arr_k = np.squeeze(ds_step[target_var].values)
-
-        if param_config.get("category_mode"):
-            return np.nan_to_num(raw_arr_k, nan=0.0).clip(0, 255).astype(np.uint8), []
-
-        # 500mb Height Anomaly
-        if "anom" in param_config.get("id", "").lower() or param_config.get("is_anomaly"):
-            target_unit = param_config.get("unit", "m").lower()
-            scale_div = 98.0665 if target_unit in {"dam"} else 9.80665
-            hgt = raw_arr_k / scale_div
-            clim = get_climatology_grid(param_config["id"], target_date_str, hgt.shape, unit=target_unit)
-            if clim is None:
-                clim = np.tile(np.nanmean(hgt, axis=1, keepdims=True), (1, hgt.shape[1]))
-            raw_arr_k = hgt - clim
-
-        elif param_config.get("unit") == "dam" or str(param_config.get("grib_param", "")).lower() in {"z", "gh", "hgt"}:
-            raw_arr_k = raw_arr_k / 98.0665
-        elif param_config.get("unit") in {"mb", "hPa"} or str(param_config.get("grib_param", "")).lower() in {"msl", "mslp"}:
-            raw_arr_k = raw_arr_k / 100.0
-
-        contour_levels = extract_contour_levels(
-            raw_arr_k,
-            param_config.get("contours", []),
-            param_config.get("contours_settings")
-        )
-
-        if want_raw:
-            return np.nan_to_num(raw_arr_k, nan=0.0).astype(np.float32), contour_levels
-
-        arr_8bit = normalize_array(raw_arr_k, param_config) if want_raster else None
-        return arr_8bit, contour_levels
-
-    except Exception as e:
-        print(f"  ❌ Error slicing step {dt_step}: {e}")
-        return None, []
-
-
-def process_thickness_from_ds(ds_z, dt_step, contour_config):
-    """Calculates 1000-500mb thickness: (Z500 - Z1000) / 98.0665"""
-    ds_step = ds_z.sel(time=dt_step, method="nearest")
-    if 'lon' in ds_step.coords: ds_step = ds_step.rename({'lon': 'longitude'})
-    if 'lat' in ds_step.coords: ds_step = ds_step.rename({'lat': 'latitude'})
-    ds_step = ds_step.sortby('latitude', ascending=False)
-    if ds_step.longitude.max() > 180:
-        ds_step = ds_step.assign_coords(longitude=(((ds_step.longitude + 180) % 360) - 180)).sortby('longitude')
-
-    da = ds_step["z"] if "z" in ds_step else list(ds_step.data_vars)[0]
-    level_coord = next((c for c in da.coords if 'isobaric' in c.lower() or 'level' in c.lower()), None)
-
-    if level_coord:
-        z500 = da.sel({level_coord: 500}).values.squeeze()
-        z1000 = da.sel({level_coord: 1000}).values.squeeze()
-    else:
-        raw_vals = da.values
-        z500, z1000 = raw_vals[0].squeeze(), raw_vals[1].squeeze()
-
-    thickness_dam = (z500 - z1000) / 98.0665
-    return extract_contour_levels(
-        thickness_dam,
-        contour_config.get("contours", []),
-        contour_config.get("contours_settings")
-    )
-
-
-def derive_ptype_array(ds_sf, ds_tp, ds_2t, dt_step):
-    """
-    Derives precipitation type category code (Rain, Freezing Rain, Sleet, Snow)
-    from ERA5 surface snowfall (sf), total precip (tp), and 2m temperature (2t).
-    """
-    try:
-        sf = np.squeeze(ds_sf.sel(time=dt_step, method="nearest").values)
-        tp = np.squeeze(ds_tp.sel(time=dt_step, method="nearest").values)
-        t2m = np.squeeze(ds_2t.sel(time=dt_step, method="nearest").values) - 273.15
-
-        ptype = np.zeros_like(tp, dtype=np.uint8)
-        has_precip = tp > 0.00005
-
-        snow_ratio = np.divide(sf, tp, out=np.zeros_like(sf), where=tp > 0.00001)
-
-        # 1 = Rain, 3 = Freezing Rain, 5 = Snow, 7 = Sleet/Ice
-        ptype[has_precip & (snow_ratio > 0.75)] = 5
-        ptype[has_precip & (snow_ratio <= 0.75) & (t2m < 0.0)] = 3
-        ptype[has_precip & (snow_ratio <= 0.75) & (t2m >= 0.0)] = 1
-
-        return ptype
-    except Exception as e:
-        return None
+    return da
 
 
 # ---------------------------------------------------------------------------
@@ -518,39 +412,45 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     print(f"\n🌪️ [{param_config['id']}] Storm: {STORM_NAME} ({STORM_ID}) | {len(time_steps)} steps ({START_DATE} to {END_DATE})")
 
     os.makedirs(output_dist_dir, exist_ok=True)
-    temp_dir = os.path.join(output_dist_dir, "temp_downloads")
-    os.makedirs(temp_dir, exist_ok=True)
 
-    # 1. Download Master File for this parameter
-    main_grib = os.path.join(temp_dir, f"{STORM_ID}_{param_config['id']}.grib")
+    ds = get_public_era5_dataset()
+
+    # 1. Fetch Main Variable
     t0 = time.perf_counter()
-    download_era5_storm_dataset(param_config, date_list, main_grib)
-    phases["download_main"] = time.perf_counter() - t0
+    grib_p = param_config["grib_param"]
+    lev = param_config.get("levelist")
 
-    ds_main = xr.open_dataset(main_grib, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+    if isinstance(grib_p, list) and "u" in grib_p and "v" in grib_p:
+        da_u = get_variable_slice(ds, "u", start_dt, end_dt, level=lev)
+        da_v = get_variable_slice(ds, "v", start_dt, end_dt, level=lev)
+        da_main = np.hypot(da_u, da_v)
+    else:
+        var_name = grib_p if isinstance(grib_p, str) else grib_p[0]
+        da_main = get_variable_slice(ds, var_name, start_dt, end_dt, level=lev)
 
-    # 2. Contour Sources (e.g. MSLP, Geopotential Heights, or Thickness)
+    phases["cloud_fetch_main"] = time.perf_counter() - t0
+
+    # 2. Fetch Contour Dependencies (e.g. MSLP, Geopotential Heights, or Thickness)
     contour_sources = param_config.get("contour_sources")
     if not contour_sources and param_config.get("contour_source"):
         contour_sources = [param_config["contour_source"]]
 
-    ds_contours = {}
+    da_contours = {}
     if contour_sources:
         for c_src in contour_sources:
             c_id = c_src.get("id", c_src.get("grib_param", "contour"))
-            c_grib = os.path.join(temp_dir, f"{STORM_ID}_{c_id}.grib")
-            c_cfg = {**param_config, **c_src}
-            download_era5_storm_dataset(c_cfg, date_list, c_grib)
-            ds_contours[c_id] = xr.open_dataset(c_grib, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+            if c_src.get("type") == "thickness":
+                da_contours[f"{c_id}_500"] = get_variable_slice(ds, "z", start_dt, end_dt, level=500)
+                da_contours[f"{c_id}_1000"] = get_variable_slice(ds, "z", start_dt, end_dt, level=1000)
+            else:
+                c_lev = c_src.get("levelist")
+                da_contours[c_id] = get_variable_slice(ds, c_src["grib_param"], start_dt, end_dt, level=c_lev)
 
-    # 3. P-Type Source (if precipitation rate)
-    ds_ptype_deps = {}
+    # 3. Fetch P-Type Dependencies (if precipitation rate)
+    da_ptype_deps = {}
     if param_config.get("ptype_source"):
-        for dep_param in ["sf", "2t"]:
-            dep_grib = os.path.join(temp_dir, f"{STORM_ID}_{dep_param}.grib")
-            dep_cfg = {"grib_param": dep_param, "era5_name": "snowfall" if dep_param == "sf" else "2m_temperature", "levtype": "sfc", "type": "fc" if dep_param == "sf" else "an"}
-            download_era5_storm_dataset(dep_cfg, date_list, dep_grib)
-            ds_ptype_deps[dep_param] = xr.open_dataset(dep_grib, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+        da_ptype_deps["sf"] = get_variable_slice(ds, "sf", start_dt, end_dt)
+        da_ptype_deps["2t"] = get_variable_slice(ds, "2t", start_dt, end_dt)
 
     # 4. Process all timesteps
     t0 = time.perf_counter()
@@ -559,46 +459,72 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     ptype_results = {}
 
     is_interval = bool(param_config.get("interval_hours") or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower()))
-    has_contour_sources = bool(contour_sources)
-    raster_config = {**param_config, "contours": []} if has_contour_sources else param_config
 
     for idx, dt in enumerate(date_list):
         step_num = time_steps[idx]
 
-        arr, c_levels = process_era5_step_from_ds(
-            ds_main, dt, raster_config, target_date_str, want_raw=is_interval
+        slice_2d = np.squeeze(da_main.sel(time=dt, method="nearest").values)
+
+        raw_arr_k = slice_2d.copy()
+        if "anom" in param_config.get("id", "").lower() or param_config.get("is_anomaly"):
+            target_unit = param_config.get("unit", "m").lower()
+            scale_div = 98.0665 if target_unit in {"dam"} else 9.80665
+            hgt = raw_arr_k / scale_div
+            clim = get_climatology_grid(param_config["id"], target_date_str, hgt.shape, unit=target_unit)
+            if clim is None:
+                clim = np.tile(np.nanmean(hgt, axis=1, keepdims=True), (1, hgt.shape[1]))
+            raw_arr_k = hgt - clim
+        elif param_config.get("unit") == "dam" or str(param_config.get("grib_param", "")).lower() in {"z", "gh", "hgt"}:
+            raw_arr_k = raw_arr_k / 98.0665
+        elif param_config.get("unit") in {"mb", "hPa"} or str(param_config.get("grib_param", "")).lower() in {"msl", "mslp"}:
+            raw_arr_k = raw_arr_k / 100.0
+
+        c_levels = extract_contour_levels(
+            raw_arr_k,
+            param_config.get("contours", []),
+            param_config.get("contours_settings")
         )
-        if arr is not None:
-            results[step_num] = arr
-            c_levels = list(c_levels)
 
-            # Extra contour layers (MSLP / Thickness)
-            if contour_sources:
-                for c_src in contour_sources:
-                    c_id = c_src.get("id", c_src.get("grib_param", "contour"))
-                    if c_src.get("type") == "thickness":
-                        levels = process_thickness_from_ds(ds_contours[c_id], dt, c_src)
-                    else:
-                        c_cfg = {**param_config, **c_src}
-                        _, levels = process_era5_step_from_ds(ds_contours[c_id], dt, c_cfg, target_date_str, want_raster=False)
-                    c_levels.extend(levels)
+        if contour_sources:
+            for c_src in contour_sources:
+                c_id = c_src.get("id", c_src.get("grib_param", "contour"))
+                if c_src.get("type") == "thickness":
+                    z500 = np.squeeze(da_contours[f"{c_id}_500"].sel(time=dt, method="nearest").values)
+                    z1000 = np.squeeze(da_contours[f"{c_id}_1000"].sel(time=dt, method="nearest").values)
+                    thick_dam = (z500 - z1000) / 98.0665
+                    levels = extract_contour_levels(thick_dam, c_src.get("contours", []), c_src.get("contours_settings"))
+                else:
+                    arr_c = np.squeeze(da_contours[c_id].sel(time=dt, method="nearest").values)
+                    if c_src.get("unit") in {"mb", "hPa"}: arr_c = arr_c / 100.0
+                    elif c_src.get("unit") == "dam": arr_c = arr_c / 98.0665
+                    levels = extract_contour_levels(arr_c, c_src.get("contours", []), c_src.get("contours_settings"))
+                c_levels.extend(levels)
 
-            if c_levels:
-                packed = pack_step(c_levels)
-                if packed and packed["props"]:
-                    contour_steps[step_num] = packed
+        if c_levels:
+            packed = pack_step(c_levels)
+            if packed and packed["props"]:
+                contour_steps[step_num] = packed
 
-            # P-Type derivation
-            if ds_ptype_deps:
-                ptype_arr = derive_ptype_array(ds_ptype_deps["sf"], ds_main, ds_ptype_deps["2t"], dt)
-                if ptype_arr is not None:
-                    ptype_results[step_num] = ptype_arr
+        if is_interval:
+            results[step_num] = np.nan_to_num(raw_arr_k, nan=0.0).astype(np.float32)
+        else:
+            results[step_num] = normalize_array(slice_2d, param_config)
 
-    phases["decode_and_contour"] = time.perf_counter() - t0
+        if da_ptype_deps:
+            sf_val = np.squeeze(da_ptype_deps["sf"].sel(time=dt, method="nearest").values)
+            tp_val = slice_2d
+            t2m_val = np.squeeze(da_ptype_deps["2t"].sel(time=dt, method="nearest").values) - 273.15
 
-    ds_main.close()
-    for ds_c in ds_contours.values(): ds_c.close()
-    for ds_p in ds_ptype_deps.values(): ds_p.close()
+            ptype = np.zeros_like(tp_val, dtype=np.uint8)
+            has_precip = tp_val > 0.00005
+            snow_ratio = np.divide(sf_val, tp_val, out=np.zeros_like(sf_val), where=tp_val > 0.00001)
+
+            ptype[has_precip & (snow_ratio > 0.75)] = 5
+            ptype[has_precip & (snow_ratio <= 0.75) & (t2m_val < 0.0)] = 3
+            ptype[has_precip & (snow_ratio <= 0.75) & (t2m_val >= 0.0)] = 1
+            ptype_results[step_num] = ptype
+
+    phases["process_frames"] = time.perf_counter() - t0
 
     sorted_steps = sorted(results.keys())
 
@@ -743,9 +669,6 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     with open(os.path.join(output_dist_dir, manifest_filename), 'w') as f:
         json.dump(manifest, f, indent=2)
 
-    # Clean temporary raw GRIB files before upload
-    shutil.rmtree(temp_dir, ignore_errors=True)
-
     print(f"\n🎉 [{param_config['id']}] Storm assets ready in {output_dist_dir}/")
 
     # 9. Upload to Hugging Face
@@ -753,7 +676,6 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     upload_to_huggingface(output_dist_dir, repo_id=HF_REPO_ID)
     phases["hf_upload"] = time.perf_counter() - t0
 
-    # Cleanup local dist folder
     try:
         shutil.rmtree(output_dist_dir)
         print(f"  ✅ [{param_config['id']}] Cleanup complete.")
