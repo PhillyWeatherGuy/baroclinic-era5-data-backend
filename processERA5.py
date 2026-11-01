@@ -90,13 +90,38 @@ def _print_timing(pid, phases, total):
     work = " | ".join(f"{k} {v[0]:.1f}s/{v[1]}x" for k, v in sorted(TIMINGS.items()))
     print(f"⏱️ [{pid}] total {total:.1f}s || phases: {ph} || thread-summed: {work}", flush=True)
 
+def normalize_contour_config(param_config):
+    """
+    Params like w250/w700/pva describe their height contours at the top level
+    ("contours" + "contours_settings") next to a single "contour_source" (the height
+    field). The pipeline, however, contours whatever array it is handed using the
+    config that sits *on that array's own entry*. Without this step the height styling
+    gets applied to the main wind/vorticity array (producing wind-speed contours) while
+    the height source itself has no styling and is skipped.
+
+    Fix: move the top-level contour styling onto the source, and clear it from the main array.
+    """
+    if param_config.get("contour_sources") or not param_config.get("contour_source"):
+        return param_config
+
+    src = dict(param_config["contour_source"])
+    src.setdefault("contours", param_config.get("contours", []))
+    if param_config.get("contours_settings") is not None:
+        src.setdefault("contours_settings", param_config["contours_settings"])
+
+    param_config["contour_sources"] = [src]
+    param_config["contours"] = []
+    param_config["contours_settings"] = None
+    return param_config
+
+
 def load_parameter_config(param_key="2t"):
     if os.path.exists(CONFIG_FILE_PATH):
         with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
             params = data.get("parameters", {})
             if param_key in params:
-                return params[param_key]
+                return normalize_contour_config(params[param_key])
     raise FileNotFoundError(f"Parameter '{param_key}' not found in {CONFIG_FILE_PATH}")
 
 
