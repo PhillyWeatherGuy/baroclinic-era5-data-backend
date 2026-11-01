@@ -18,6 +18,7 @@ import cv2
 import contourpy
 import gzip
 import struct
+import gc
 
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
@@ -384,9 +385,9 @@ def get_variable_slice(ds, var_name, start_dt, end_dt, level=None):
     if da.longitude.max() > 180:
         da = da.assign_coords(longitude=(((da.longitude + 180) % 360) - 180)).sortby('longitude')
 
-    # 🌟 MAGIC SPEED FIX: .load() forces Xarray to fetch the entire 3D block
-    # over the network into RAM immediately, instead of making 150 individual HTTP requests!
-    return da.load()
+    # 🌟 MAGIC SPEED FIX + MEMORY FIX: .load() forces Xarray to fetch the entire 3D block
+    # over the network into RAM immediately. .astype(np.float32) halves the RAM usage!
+    return da.astype(np.float32).load()
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +545,12 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
             ptype_results[step_num] = ptype
 
     phases["process_frames"] = time.perf_counter() - t0
+
+    # 🌟 AGGRESSIVE GARBAGE COLLECTION (Free up 3.7 GB of RAM before contouring/gzipping)
+    del da_main
+    da_contours.clear()
+    da_ptype_deps.clear()
+    gc.collect()
 
     sorted_steps = sorted(results.keys())
 
