@@ -19,8 +19,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-plot:
+  # Decides how to split the work across runners.
+  #  - Inputs left blank -> all 25 parameters in 15 balanced groups.
+  #  - Inputs given      -> one runner per listed parameter.
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+    - name: Build job matrix
+      id: plan
+      env:
+        TARGET_PARAMS: ${{ inputs.parameters }}
+      run: |
+        python3 - <<'EOF'
+        import json, os
+
+        target = os.environ.get("TARGET_PARAMS", "").split()
+
+        default_groups = [
+            "prate",
+            "pva",
+            "w250 w300",
+            "w500 w700",
+            "w850 w925",
+            "t1000 t925",
+            "t850 t700",
+            "t600 t500",
+            "t400 z500_anom",
+            "2t",
+            "cape pwat",
+            "asnow asnow_6h",
+            "asnow_24h tp",
+            "tp_6h",
+            "tp_24h",
+        ]
+
+        groups = target if target else default_groups
+        matrix = {"include": [{"name": g, "params": g} for g in groups]}
+
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+        print(f"Planned {len(groups)} job(s): {groups}")
+        EOF
+
+  build-and-plot:
+    name: ${{ matrix.name }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false   # one failed group must not cancel the others
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
     - name: Checkout Repository
@@ -29,13 +79,13 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.11'
         cache: 'pip'
 
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install numpy xarray zarr gcsfs fsspec opencv-python-headless contourpy netCDF4 boto3 huggingface_hub
+        pip install numpy pandas xarray zarr gcsfs fsspec opencv-python-headless contourpy netCDF4 boto3 huggingface_hub
 
     - name: Run ERA5 Data Texture Pipeline & Upload
       env:
@@ -43,10 +93,5 @@ jobs:
         B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
         B2_ENDPOINT: ${{ secrets.B2_ENDPOINT }}
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        TARGET_PARAMS: ${{ inputs.parameters }}
-      run: |
-        if [ -n "$TARGET_PARAMS" ]; then
-          python processERA5.py $TARGET_PARAMS
-        else
-          python processERA5.py
-        fi
+        PARAMS: ${{ matrix.params }}
+      run: python processERA5.py $PARAMS
