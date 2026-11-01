@@ -24,7 +24,7 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_superstorm_1993v3"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_ID   = "era5_superstorm_1993v4"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
 STORM_NAME = "1993 Superstorm"              # Display title in the UI manifest
 START_DATE = "1993-03-10 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
 END_DATE   = "1993-03-16 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
@@ -322,7 +322,6 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
     if cache_key in CLIMATOLOGY_CACHE:
         return CLIMATOLOGY_CACHE[cache_key]
 
-    # 🌟 Search both config/climatology and the repo root, matching every common naming convention
     search_dirs = [os.path.join("config", "climatology"), "climatology", "."]
     candidate_names = [
         "z500_clim.nc",
@@ -342,7 +341,7 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
                         var = next((v for v in ["z", "gh", "z500", "hgt"] if v in ds), list(ds.data_vars)[0])
                         da = ds[var]
 
-                        # 🌟 Handle all month-coordinate conventions (CDO uses 'mon', some use 'time' with 12 steps)
+                        # 1. Select the month
                         if "month" in da.coords:
                             da = da.sel(month=month)
                         elif "mon" in da.coords:
@@ -354,7 +353,12 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
                         elif da.sizes.get("time") == 12:
                             da = da.isel(time=month - 1)
 
-                        # 🌟 Enforce the same grid orientation the main pipeline uses
+                        # 🌟 NEW: Select the 500mb level!
+                        level_coord = next((c for c in da.coords if 'level' in c.lower() or 'isobaric' in c.lower() or 'plev' in c.lower()), None)
+                        if level_coord:
+                            da = da.sel({level_coord: 500})
+
+                        # Enforce the same grid orientation the main pipeline uses
                         if "lat" in da.coords: da = da.rename({"lat": "latitude"})
                         if "lon" in da.coords: da = da.rename({"lon": "longitude"})
                         if "latitude" in da.coords:
