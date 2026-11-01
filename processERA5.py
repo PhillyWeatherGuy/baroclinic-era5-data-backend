@@ -24,7 +24,7 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_hurricane_sandy"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_ID   = "era5_hurricane_sandyv2"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
 STORM_NAME = "Hurricane Sandy"              # Display title in the UI manifest
 START_DATE = "2012-10-22 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
 END_DATE   = "2012-11-02 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
