@@ -760,6 +760,50 @@
         "contours_binary": "{storm}_z925_contours.bin.gz",
         "manifest": "{storm}_{param}_manifest.json"
       }
+    },
+    "w10": {
+      "id": "w10",
+      "name": "10m Wind",
+      "grib_param": ["10u", "10v"],
+      "era5_name": ["10m_u_component_of_wind", "10m_v_component_of_wind"],
+      "levtype": "sfc",
+      "type": "an",
+      "unit": "kts",
+      "scaling": {
+        "mode": "piecewise",
+        "unit_multiplier": 1.943844,
+        "val_points": [0.0, 50.0, 75.0, 100.0, 125.0, 150.0, 175.0, 200.0, 250.0],
+        "byte_points": [0, 40, 75, 110, 145, 180, 210, 235, 255]
+      },
+      "contours": [],
+      "filename_patterns": {
+        "volume": "{storm}_{param}_volume_{chunk_idx}.bin",
+        "contours_json": "{storm}_{param}_contours.json",
+        "contours_binary": "{storm}_{param}_contours.bin.gz",
+        "manifest": "{storm}_{param}_manifest.json"
+      }
+    },
+    "gust10": {
+      "id": "gust10",
+      "name": "10m Wind Gust",
+      "grib_param": "fg10",
+      "era5_name": "10m_wind_gust_since_previous_post_processing",
+      "levtype": "sfc",
+      "type": "fc",
+      "unit": "kts",
+      "scaling": {
+        "mode": "piecewise",
+        "unit_multiplier": 1.943844,
+        "val_points": [0.0, 50.0, 75.0, 100.0, 125.0, 150.0, 175.0, 200.0, 250.0],
+        "byte_points": [0, 40, 75, 110, 145, 180, 210, 235, 255]
+      },
+      "contours": [],
+      "filename_patterns": {
+        "volume": "{storm}_{param}_volume_{chunk_idx}.bin",
+        "contours_json": "{storm}_{param}_contours.json",
+        "contours_binary": "{storm}_{param}_contours.bin.gz",
+        "manifest": "{storm}_{param}_manifest.json"
+      }
     }
   }
 }
