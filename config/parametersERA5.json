@@ -204,7 +204,7 @@
       },
       "scaling": {
         "mode": "piecewise",
-        "unit_multiplier": 141.7322834646,
+        "unit_multiplier": 39.3701,
         "val_points": [0.0, 0.1, 1.0, 2.5],
         "byte_points": [0, 100, 200, 255]
       },
