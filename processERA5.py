@@ -24,7 +24,7 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_superstorm_1993v2"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_ID   = "era5_superstorm_1993v3"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
 STORM_NAME = "1993 Superstorm"              # Display title in the UI manifest
 START_DATE = "1993-03-10 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
 END_DATE   = "1993-03-16 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
@@ -322,17 +322,17 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
     if cache_key in CLIMATOLOGY_CACHE:
         return CLIMATOLOGY_CACHE[cache_key]
 
-    clim_dir = os.path.join("config", "climatology")
-    if not os.path.exists(clim_dir):
-        clim_dir = "climatology"
-
-    candidate_files = [
-        os.path.join(clim_dir, "z500_clim.nc"),
-        os.path.join(clim_dir, "era5_z500_climatology.nc"),
-        os.path.join(clim_dir, "z500_climatology.nc"),
-        os.path.join(clim_dir, f"z500_clim_{month:02d}.npy"),
-        os.path.join(clim_dir, "z500_clim.npy"),
+    # 🌟 Search both config/climatology and the repo root, matching every common naming convention
+    search_dirs = [os.path.join("config", "climatology"), "climatology", "."]
+    candidate_names = [
+        "z500_clim.nc",
+        "era5_z500_climatology.nc",
+        "z500_climatology.nc",
+        "hgt.mon.ltm.1991-2020.nc",   # ← your CDO filename
+        f"z500_clim_{month:02d}.npy",
+        "z500_clim.npy",
     ]
+    candidate_files = [os.path.join(d, n) for d in search_dirs for n in candidate_names]
 
     for c_path in candidate_files:
         if os.path.exists(c_path):
@@ -341,26 +341,49 @@ def get_climatology_grid(param_id, target_date=None, target_shape=(721, 1440), u
                     with xr.open_dataset(c_path) as ds:
                         var = next((v for v in ["z", "gh", "z500", "hgt"] if v in ds), list(ds.data_vars)[0])
                         da = ds[var]
+
+                        # 🌟 Handle all month-coordinate conventions (CDO uses 'mon', some use 'time' with 12 steps)
                         if "month" in da.coords:
                             da = da.sel(month=month)
+                        elif "mon" in da.coords:
+                            da = da.sel(mon=month)
+                        elif "time" in da.coords and da.sizes.get("time") == 12:
+                            months = da.time.dt.month.values
+                            idx = list(months).index(month) if month in months else 0
+                            da = da.isel(time=idx)
+                        elif da.sizes.get("time") == 12:
+                            da = da.isel(time=month - 1)
+
+                        # 🌟 Enforce the same grid orientation the main pipeline uses
+                        if "lat" in da.coords: da = da.rename({"lat": "latitude"})
+                        if "lon" in da.coords: da = da.rename({"lon": "longitude"})
+                        if "latitude" in da.coords:
+                            da = da.sortby("latitude", ascending=False)
+                        if "longitude" in da.coords and da.longitude.max() > 180:
+                            da = da.assign_coords(longitude=(((da.longitude + 180) % 360) - 180)).sortby("longitude")
+
                         grid = np.squeeze(da.values).astype(np.float32)
                 elif c_path.endswith(".npy"):
                     grid = np.load(c_path).astype(np.float32)
 
+                if grid.ndim != 2:
+                    print(f"  ⚠️ Climatology file {c_path} did not reduce to 2D (got shape {grid.shape}); skipping.")
+                    continue
+
                 if grid.shape != target_shape:
                     grid = cv2.resize(grid, (target_shape[1], target_shape[0]), interpolation=cv2.INTER_LINEAR)
 
+                # Geopotential (m²/s², ~55000) → meters (~5600); leave geopotential height (m) untouched
                 if np.nanmean(grid) > 20000.0:
-                    scale = 98.0665 if unit == "dam" else 9.80665
-                    grid /= scale
-                elif unit == "dam" and np.nanmean(grid) > 1000.0:
-                    grid /= 10.0
+                    grid /= 9.80665
 
                 CLIMATOLOGY_CACHE[cache_key] = grid
+                print(f"  📖 Loaded climatology from {c_path} (month={month}, mean={np.nanmean(grid):.1f} {unit})")
                 return grid
             except Exception as e:
                 print(f"  ⚠️ Error loading climatology file {c_path}: {e}")
 
+    print(f"  ❌ No climatology file found — anomalies will fall back to zonal mean!")
     return None
 
 
