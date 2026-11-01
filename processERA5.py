@@ -399,8 +399,9 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     t_total = time.perf_counter()
     phases = {}
 
-    start_dt = datetime.datetime.fromisoformat(START_DATE).replace(tzinfo=datetime.timezone.utc)
-    end_dt   = datetime.datetime.fromisoformat(END_DATE).replace(tzinfo=datetime.timezone.utc)
+    # 🌟 Timezone-naive datetimes matching the raw cloud dataset indexing
+    start_dt = datetime.datetime.fromisoformat(START_DATE)
+    end_dt   = datetime.datetime.fromisoformat(END_DATE)
 
     total_hours = int((end_dt - start_dt).total_seconds() // 3600)
     time_steps = list(range(0, total_hours + 1, STEP_HOURS))
