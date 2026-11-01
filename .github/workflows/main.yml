@@ -1,6 +1,6 @@
 name: Generate ERA5 Storm Data
 
-run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.parameters && format('ERA5 Custom: {0}', inputs.parameters) || 'ERA5 All Parameters') || 'ERA5 Storm Build' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('ERA5 {0}', inputs.parameters) || 'ERA5 Storm Build' }}
 
 on:
   push:
