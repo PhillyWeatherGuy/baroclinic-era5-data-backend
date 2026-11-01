@@ -27,7 +27,7 @@ import gc
 STORM_ID   = "era5_hurricane_sandy"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
 STORM_NAME = "Hurricane Sandy"              # Display title in the UI manifest
 START_DATE = "2012-10-22 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
-END_DATE   = "2012-10-29 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
+END_DATE   = "2012-11-02 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
 STEP_HOURS = 2                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
