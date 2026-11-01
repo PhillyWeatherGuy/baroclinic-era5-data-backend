@@ -36,7 +36,7 @@ ARCO_ERA5_ZARR = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.z
 
 # Performance & Concurrency
 MAX_CONCURRENT_WORKERS = int(os.environ.get("MAX_WORKERS", "12"))
-MAX_CONCURRENT_PARAMS  = 2
+MAX_CONCURRENT_PARAMS  = 1
 GZIP_LEVEL = 6
 GZIP_THREADS = 4
 FRAMES_PER_VOLUME = 10                       # 10 time frames per binary chunk
