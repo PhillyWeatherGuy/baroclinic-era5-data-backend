@@ -426,6 +426,16 @@ class BlockedVar:
         return self._da.latitude
 
 
+class BlockedWind:
+    """Blocked wind speed: sqrt(u^2 + v^2), with u and v each loaded a block at a time."""
+    def __init__(self, ds, start, end, level=None, block=BLOCK_HOURS):
+        self.u = BlockedVar(ds, "u", start, end, level=level, block=block)
+        self.v = BlockedVar(ds, "v", start, end, level=level, block=block)
+
+    def sel(self, time, method=None):
+        return np.hypot(self.u.sel(time, method), self.v.sel(time, method))
+
+
 # ---------------------------------------------------------------------------
 # Master Pipeline for ERA5 Storm
 # ---------------------------------------------------------------------------
@@ -460,13 +470,11 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     lev = param_config.get("levelist")
 
     if param_config["id"] == "pva":
-        da_u = get_variable_slice(ds, "u", start_dt, end_dt, level=lev)
-        da_v = get_variable_slice(ds, "v", start_dt, end_dt, level=lev)
+        da_u = BlockedVar(ds, "u", start_dt, end_dt, level=lev)
+        da_v = BlockedVar(ds, "v", start_dt, end_dt, level=lev)
         da_main = (da_u, da_v)
     elif isinstance(grib_p, list) and "u" in grib_p and "v" in grib_p:
-        da_u = get_variable_slice(ds, "u", start_dt, end_dt, level=lev)
-        da_v = get_variable_slice(ds, "v", start_dt, end_dt, level=lev)
-        da_main = np.hypot(da_u, da_v)
+        da_main = BlockedWind(ds, start_dt, end_dt, level=lev)
     else:
         var_name = grib_p if isinstance(grib_p, str) else grib_p[0]
         da_main = BlockedVar(ds, var_name, start_dt, end_dt, level=lev)
@@ -749,18 +757,28 @@ def upload_to_huggingface(folder_path, repo_id=HF_REPO_ID):
         return
 
     print(f"\n🤗 Uploading {folder_path} assets to Hugging Face ({repo_id})...")
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi(token=hf_token)
-        api.upload_folder(
-            folder_path=folder_path,
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"Upload storm {STORM_ID} data: {folder_path}"
-        )
-        print(f"  ✅ Uploaded to Hugging Face: {folder_path}")
-    except Exception as e:
-        print(f"  ❌ Failed to upload to Hugging Face: {e}")
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token)
+
+    # Several matrix jobs commit to the same repo at once, so retry with jittered backoff.
+    attempts = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            api.upload_folder(
+                folder_path=folder_path,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"Upload storm {STORM_ID} data: {folder_path}"
+            )
+            print(f"  ✅ Uploaded to Hugging Face: {folder_path}")
+            return
+        except Exception as e:
+            if attempt == attempts:
+                print(f"  ❌ Failed to upload to Hugging Face after {attempts} attempts: {e}")
+                raise
+            wait = (2 ** attempt) + np.random.uniform(0, 3)
+            print(f"  ⚠️ Upload attempt {attempt}/{attempts} failed ({e}); retrying in {wait:.1f}s")
+            time.sleep(wait)
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +800,7 @@ if __name__ == "__main__":
 
     batch_size = MAX_CONCURRENT_PARAMS
     t_run = time.perf_counter()
+    failed_params = []
 
     for i in range(0, len(target_params), batch_size):
         batch = target_params[i:i + batch_size]
@@ -800,7 +819,12 @@ if __name__ == "__main__":
                     print(f"✅ Finished: {param}")
                 except Exception as e:
                     print(f"❌ Error on '{param}': {e}")
+                    failed_params.append(param)
 
         print(f"⏱️ Batch {batch_num}/{total_batches} took {time.perf_counter() - t_batch:.1f}s", flush=True)
+
+    if failed_params:
+        print(f"\n❌ STORM '{STORM_NAME}' finished with failures: {failed_params}")
+        sys.exit(1)
 
     print(f"\n🎉 STORM '{STORM_NAME}' COMPLETED SUCCESSFULLY in {time.perf_counter() - t_run:.1f}s!")
