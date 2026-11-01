@@ -384,7 +384,9 @@ def get_variable_slice(ds, var_name, start_dt, end_dt, level=None):
     if da.longitude.max() > 180:
         da = da.assign_coords(longitude=(((da.longitude + 180) % 360) - 180)).sortby('longitude')
 
-    return da
+    # 🌟 MAGIC SPEED FIX: .load() forces Xarray to fetch the entire 3D block
+    # over the network into RAM immediately, instead of making 150 individual HTTP requests!
+    return da.load()
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +401,6 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     t_total = time.perf_counter()
     phases = {}
 
-    # 🌟 Timezone-naive datetimes matching the raw cloud dataset indexing
     start_dt = datetime.datetime.fromisoformat(START_DATE)
     end_dt   = datetime.datetime.fromisoformat(END_DATE)
 
@@ -421,7 +422,11 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     grib_p = param_config["grib_param"]
     lev = param_config.get("levelist")
 
-    if isinstance(grib_p, list) and "u" in grib_p and "v" in grib_p:
+    if param_config["id"] == "pva":
+        da_u = get_variable_slice(ds, "u", start_dt, end_dt, level=lev)
+        da_v = get_variable_slice(ds, "v", start_dt, end_dt, level=lev)
+        da_main = (da_u, da_v)
+    elif isinstance(grib_p, list) and "u" in grib_p and "v" in grib_p:
         da_u = get_variable_slice(ds, "u", start_dt, end_dt, level=lev)
         da_v = get_variable_slice(ds, "v", start_dt, end_dt, level=lev)
         da_main = np.hypot(da_u, da_v)
@@ -459,12 +464,25 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
     contour_steps = {}
     ptype_results = {}
 
-    is_interval = bool(param_config.get("interval_hours") or re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower()))
+    is_accum = param_config["id"].startswith(("tp", "asnow"))
 
     for idx, dt in enumerate(date_list):
         step_num = time_steps[idx]
 
-        slice_2d = np.squeeze(da_main.sel(time=dt, method="nearest").values)
+        if param_config["id"] == "pva" and isinstance(da_main, tuple):
+            da_u, da_v = da_main
+            u_slice = np.squeeze(da_u.sel(time=dt, method="nearest").values)
+            v_slice = np.squeeze(da_v.sel(time=dt, method="nearest").values)
+            
+            lats = da_u.latitude.values
+            dy = -27830.0 # 0.25 deg grid spacing (descending latitudes)
+            dx = np.maximum((27830.0 * np.cos(np.radians(lats)))[:, None], 1.0)
+            
+            du_dy = np.gradient(u_slice, axis=0) / dy
+            dv_dx = np.gradient(v_slice, axis=1) / dx
+            slice_2d = dv_dx - du_dy
+        else:
+            slice_2d = np.squeeze(da_main.sel(time=dt, method="nearest").values)
 
         raw_arr_k = slice_2d.copy()
         if "anom" in param_config.get("id", "").lower() or param_config.get("is_anomaly"):
@@ -506,10 +524,10 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
             if packed and packed["props"]:
                 contour_steps[step_num] = packed
 
-        if is_interval:
+        if is_accum:
             results[step_num] = np.nan_to_num(raw_arr_k, nan=0.0).astype(np.float32)
         else:
-            results[step_num] = normalize_array(slice_2d, param_config)
+            results[step_num] = normalize_array(raw_arr_k, param_config)
 
         if da_ptype_deps:
             sf_val = np.squeeze(da_ptype_deps["sf"].sel(time=dt, method="nearest").values)
@@ -529,27 +547,22 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
 
     sorted_steps = sorted(results.keys())
 
-    # 5. Interval Differencing (6h / 24h accumulations)
-    interval_h = param_config.get("interval_hours")
-    if not interval_h:
-        match = re.search(r'[-_]?(6|24)h(?:r)?$', param_config.get("id", "").lower())
-        if match:
-            interval_h = int(match.group(1))
-
-    if interval_h:
-        diff_results = {}
+    if is_accum:
+        accum_results = {}
+        interval_h = param_config.get("interval_hours")
         for s in sorted_steps:
-            target_prev = s - interval_h
-            if target_prev <= 0:
-                prev_arr = results.get(0, 0.0)
+            if interval_h:
+                valid_steps = [st for st in sorted_steps if (s - interval_h) < st <= s]
             else:
-                candidates = [st for st in sorted_steps if st <= target_prev]
-                prev_s = max(candidates) if candidates else None
-                prev_arr = results[prev_s] if prev_s is not None else 0.0
-
-            diff = np.maximum(0.0, results[s] - prev_arr)
-            diff_results[s] = normalize_array(diff, param_config)
-        results = diff_results
+                valid_steps = [st for st in sorted_steps if st <= s]
+            
+            if valid_steps:
+                accum_arr = sum(results[st] for st in valid_steps)
+            else:
+                accum_arr = results[s]
+                
+            accum_results[s] = normalize_array(accum_arr, param_config)
+        results = accum_results
 
     frame_arrays = [results[s] for s in sorted_steps]
     ptype_arrays = [ptype_results.get(s) for s in sorted_steps]
