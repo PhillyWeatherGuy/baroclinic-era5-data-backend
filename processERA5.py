@@ -398,7 +398,11 @@ def get_variable_slice(ds, var_name, start_dt, end_dt, level=None):
         "z": "geopotential",
         "u": "u_component_of_wind",
         "v": "v_component_of_wind",
-        "vo": "vorticity"
+        "vo": "vorticity",
+        # 🌟 ADDED: 10m winds and gusts for ERA5
+        "10u": "10m_u_component_of_wind",
+        "10v": "10m_v_component_of_wind",
+        "fg10": "10m_wind_gust_since_previous_post_processing"
     }
     cloud_var = var_map.get(var_name, var_name)
 
@@ -453,9 +457,10 @@ class BlockedVar:
 
 class BlockedWind:
     """Blocked wind speed: sqrt(u^2 + v^2), with u and v each loaded a block at a time."""
-    def __init__(self, ds, start, end, level=None, block=BLOCK_HOURS):
-        self.u = BlockedVar(ds, "u", start, end, level=level, block=block)
-        self.v = BlockedVar(ds, "v", start, end, level=level, block=block)
+    def __init__(self, ds, start, end, level=None, block=BLOCK_HOURS, u_var="u", v_var="v"):
+        # 🌟 UPDATED: defaults to "u"/"v" but can accept "10u"/"10v"
+        self.u = BlockedVar(ds, u_var, start, end, level=level, block=block)
+        self.v = BlockedVar(ds, v_var, start, end, level=level, block=block)
 
     def sel(self, time, method=None):
         return np.hypot(self.u.sel(time, method), self.v.sel(time, method))
@@ -498,8 +503,11 @@ def run_era5_storm_pipeline(selected_param_key="2t"):
         da_u = BlockedVar(ds, "u", start_dt, end_dt, level=lev)
         da_v = BlockedVar(ds, "v", start_dt, end_dt, level=lev)
         da_main = (da_u, da_v)
-    elif isinstance(grib_p, list) and "u" in grib_p and "v" in grib_p:
-        da_main = BlockedWind(ds, start_dt, end_dt, level=lev)
+    elif isinstance(grib_p, list) and len(grib_p) == 2 and any(x.endswith("u") for x in grib_p) and any(x.endswith("v") for x in grib_p):
+        # 🌟 UPDATED: Safely handles ["u", "v"] AND ["10u", "10v"]
+        u_var = next(x for x in grib_p if x.endswith("u"))
+        v_var = next(x for x in grib_p if x.endswith("v"))
+        da_main = BlockedWind(ds, start_dt, end_dt, level=lev, u_var=u_var, v_var=v_var)
     else:
         var_name = grib_p if isinstance(grib_p, str) else grib_p[0]
         da_main = BlockedVar(ds, var_name, start_dt, end_dt, level=lev)
