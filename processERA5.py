@@ -24,10 +24,10 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_blizzard_2026"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
-STORM_NAME = "Blizzard of '26"              # Display title in the UI manifest
-START_DATE = "2026-02-19 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
-END_DATE   = "2026-02-25 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
+STORM_ID   = "era5_blizzard_2016"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_NAME = "Blizzard of '16"              # Display title in the UI manifest
+START_DATE = "2016-01-20 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
+END_DATE   = "2016-01-25 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
 STEP_HOURS = 1                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
