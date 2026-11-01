@@ -592,7 +592,30 @@
         "val_points": [0.0, 50.0, 75.0, 100.0, 125.0, 150.0, 175.0, 200.0, 250.0],
         "byte_points": [0, 40, 75, 110, 145, 180, 210, 235, 255]
       },
-      "contours": [],
+      "contour_source": {
+        "grib_param": "z",
+        "era5_name": "geopotential",
+        "levtype": "pl",
+        "levelist": 500,
+        "unit": "dam"
+      },
+      "contours_settings": {
+        "blur_kernel": [3, 3],
+        "blur_sigma": 0.9,
+        "coarsen_stride": 2
+      },
+      "contours": [
+        {
+          "id": "z500_6dam",
+          "name": "500mb Height",
+          "color": "#000000",
+          "width": 1.6,
+          "opacity": 0.9,
+          "interval": 6.0,
+          "dynamic": true,
+          "unit": "dam"
+        }
+      ],
       "filename_patterns": {
         "volume": "{storm}_{param}_volume_{chunk_idx}.bin",
         "contours_json": "{storm}_z500_contours.json",
