@@ -24,10 +24,10 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_november_gale_75"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
-STORM_NAME = "November Gale of '75"              # Display title in the UI manifest
-START_DATE = "1975-11-05 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
-END_DATE   = "1975-11-12 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
+STORM_ID   = "era5_christmas_storm_89"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_NAME = "Carolina Christmas Snowstorm"              # Display title in the UI manifest
+START_DATE = "1989-12-20 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
+END_DATE   = "1989-12-26 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
 STEP_HOURS = 1                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
