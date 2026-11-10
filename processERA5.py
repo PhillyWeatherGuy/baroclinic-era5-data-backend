@@ -24,7 +24,7 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "november_gale_of_1975"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_ID   = "era5_november_gale_75"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
 STORM_NAME = "November Gale of '75"              # Display title in the UI manifest
 START_DATE = "1975-11-05 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
 END_DATE   = "1975-11-12 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
