@@ -24,10 +24,10 @@ import gc
 # ===========================================================================
 # 🌪️ STORM CONFIGURATION (Edit this section for each storm)
 # ===========================================================================
-STORM_ID   = "era5_isaias_2020"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
-STORM_NAME = "Hurricane Isaias '20"              # Display title in the UI manifest
-START_DATE = "2020-07-29 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
-END_DATE   = "2020-08-06 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
+STORM_ID   = "november_gale_of_1975"          # URL-safe slug (keep 'era5_' prefix for Cloudflare routing)
+STORM_NAME = "November Gale of '75"              # Display title in the UI manifest
+START_DATE = "1975-11-05 00:00"             # UTC Start time (YYYY-MM-DD HH:MM)
+END_DATE   = "1975-11-12 05:00"             # UTC End time   (YYYY-MM-DD HH:MM)
 STEP_HOURS = 1                              # 1 for hourly, 3 for 3-hourly, 6 for 6-hourly
 
 HF_REPO_ID = "PhillyWeatherGuy/baroclinic-era5-data"
